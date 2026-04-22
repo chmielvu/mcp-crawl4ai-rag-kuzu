@@ -5,19 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "crawl4ai-mcp"
 version = "0.1.0"
-description = "MCP server for integrating web crawling and RAG into AI agents and AI coding assistants"
+description = "MCP server for integrating web crawling and Kuzu-backed RAG into AI agents and AI coding assistants"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "crawl4ai==0.6.2",
+    "flashrank>=0.2.10",
+    "kuzu>=0.11.3",
     "mcp==1.7.1",
-    "supabase==2.15.1",
-    "openai==1.71.0",
-    "dotenv==0.9.9",
-    "sentence-transformers>=4.1.0",
+    "mistralai>=2.4.1",
+    "pydantic-settings>=2.9.1",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
-    "pydantic-settings>=2.9.1",
+    "requests>=2.32.0",
 ]
 
 [project.scripts]
@@ -48,6 +48,11 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = "(^|/)(tests/|conftest\\.py$)"
+
+[[tool.mypy.overrides]]
+module = ["crawl4ai", "crawl4ai.*", "flashrank", "flashrank.*"]
+ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel]
 include = [

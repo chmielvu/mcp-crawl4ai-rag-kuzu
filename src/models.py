@@ -3,11 +3,13 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, HttpUrl, field_validator, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationInfo, field_validator
 
 
 class CrawlType(str, Enum):
     """Types of crawling operations."""
+
     SINGLE_PAGE = "single_page"
     SITEMAP = "sitemap"
     TXT_FILE = "txt_file"
@@ -16,32 +18,34 @@ class CrawlType(str, Enum):
 
 class SearchType(str, Enum):
     """Types of search operations."""
+
     SEMANTIC = "semantic"
     HYBRID = "hybrid"
     CODE = "code"
 
 
-# Request Models
 class CrawlRequest(BaseModel):
     """Request model for crawling operations."""
+
     url: HttpUrl
     max_depth: int = Field(default=3, ge=1, le=10)
     max_concurrent: int = Field(default=10, ge=1, le=50)
     chunk_size: int = Field(default=5000, ge=100, le=10000)
     overlap: int = Field(default=200, ge=0, le=1000)
     extract_code_examples: Optional[bool] = None
-    
+
     @field_validator("overlap")
-    def validate_overlap(cls, v: int, info) -> int:
+    def validate_overlap(cls, value: int, info: ValidationInfo) -> int:
         """Ensure overlap is less than chunk size."""
         chunk_size = info.data.get("chunk_size", 5000)
-        if v >= chunk_size:
+        if value >= chunk_size:
             raise ValueError("Overlap must be less than chunk size")
-        return v
+        return value
 
 
 class SearchRequest(BaseModel):
     """Request model for search operations."""
+
     query: str = Field(min_length=1, max_length=1000)
     source: Optional[str] = None
     num_results: int = Field(default=5, ge=1, le=20)
@@ -52,15 +56,16 @@ class SearchRequest(BaseModel):
 
 class CodeSearchRequest(BaseModel):
     """Request model for code search operations."""
+
     query: str = Field(min_length=1, max_length=500)
     language: Optional[str] = None
     source: Optional[str] = None
     num_results: int = Field(default=5, ge=1, le=20)
 
 
-# Response Models
 class CrawlResult(BaseModel):
     """Result model for crawling operations."""
+
     success: bool
     url: str
     crawl_type: CrawlType
@@ -73,6 +78,7 @@ class CrawlResult(BaseModel):
 
 class SearchResult(BaseModel):
     """Result model for a single search result."""
+
     content: str
     url: str
     source: str
@@ -84,6 +90,7 @@ class SearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     """Response model for search operations."""
+
     success: bool
     results: List[SearchResult]
     total_results: int
@@ -93,6 +100,7 @@ class SearchResponse(BaseModel):
 
 class CodeExample(BaseModel):
     """Model for code examples."""
+
     code: str
     language: str
     context: str
@@ -104,6 +112,7 @@ class CodeExample(BaseModel):
 
 class RAGResponse(BaseModel):
     """Response model for RAG queries."""
+
     success: bool
     answer: str
     sources: List[Dict[str, Any]]
@@ -114,6 +123,7 @@ class RAGResponse(BaseModel):
 
 class SourceInfo(BaseModel):
     """Model for source information."""
+
     source: str
     total_documents: int
     total_chunks: int
@@ -123,9 +133,9 @@ class SourceInfo(BaseModel):
     summary: Optional[str] = None
 
 
-# Data Models
 class Document(BaseModel):
     """Model for document chunks."""
+
     url: str
     content: str
     chunk_number: int
@@ -139,18 +149,19 @@ class Document(BaseModel):
 
 
 class CrawlContext(BaseModel):
-    """Context for crawling operations (replaces dataclass)."""
+    """Context for crawling operations."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    crawler: Any  # AsyncWebCrawler - using Any to avoid circular imports
-    supabase_client: Any  # Client - using Any to avoid circular imports
-    reranking_model: Optional[Any] = None  # CrossEncoder
-    settings: Optional[Any] = None  # Settings - using Any to avoid circular imports
+
+    crawler: Any
+    db_connection: Any
+    reranking_model: Any = None
+    settings: Any
 
 
-# Batch Operation Models
 class BatchCrawlRequest(BaseModel):
     """Request model for batch crawling operations."""
+
     urls: List[HttpUrl]
     max_concurrent: int = Field(default=10, ge=1, le=50)
     chunk_size: int = Field(default=5000, ge=100, le=10000)
@@ -160,6 +171,7 @@ class BatchCrawlRequest(BaseModel):
 
 class BatchCrawlResult(BaseModel):
     """Result model for batch crawling operations."""
+
     success: bool
     total_urls: int
     successful_urls: int

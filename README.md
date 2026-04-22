@@ -4,21 +4,21 @@
   <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com), [Kuzu](https://kuzudb.com/), [Mistral AI](https://docs.mistral.ai/), and [FlashRank](https://github.com/PrithivirajDamodaran/FlashRank) for advanced web crawling and RAG.
 
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
-The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
+This refactor keeps the MCP surface while moving the project to an embedded Kuzu graph + vector store, Mistral models for embeddings and summaries, and FlashRank for local reranking.
 
 ## Overview
 
-This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/) I provided on my channel previously.
+This MCP server provides tools that enable AI agents to crawl websites, store content in an embedded Kuzu database, and perform RAG over the crawled content. It follows the same MCP tool model as before while making local execution much simpler because the storage layer now lives inside the project instead of a separate hosted database.
 
 The server includes several advanced RAG strategies that can be enabled to enhance retrieval quality:
 - **Contextual Embeddings** for enriched semantic understanding
 - **Hybrid Search** combining vector and keyword search
 - **Agentic RAG** for specialized code example extraction
-- **Reranking** for improved result relevance using cross-encoder models
+- **Reranking** for improved result relevance using FlashRank
 
 See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
 
@@ -28,7 +28,7 @@ The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
 
 1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
 
-2. **Multiple Embedding Models**: Expanding beyond OpenAI to support a variety of embedding models, including the ability to run everything locally with Ollama for complete control and privacy.
+2. **Multiple Embedding Models**: The current default provider is Mistral AI, with the architecture now centered around pluggable local storage and cleaner retrieval boundaries.
 
 3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
 
@@ -51,7 +51,7 @@ The server provides essential web crawling and search tools:
 
 ### Core Tools (Always Available)
 
-1. **`crawl_single_page`**: Quickly crawl a single web page and store its content in the vector database
+1. **`crawl_single_page`**: Quickly crawl a single web page and store its content in Kuzu
 2. **`smart_crawl_url`**: Intelligently crawl a full website based on the type of URL provided (sitemap, llms-full.txt, or a regular webpage that needs to be crawled recursively)
 3. **`get_available_sources`**: Get a list of all available sources (domains) in the database
 4. **`perform_rag_query`**: Search for relevant content using semantic search with optional source filtering
@@ -62,14 +62,14 @@ The server provides essential web crawling and search tools:
 
 ## Prerequisites
 
-- [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
-- [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
-- [Supabase](https://supabase.com/) (database for RAG)
-- [OpenAI API key](https://platform.openai.com/api-keys) (for generating embeddings)
+- [Python 3.12+](https://www.python.org/downloads/)
+- [uv](https://docs.astral.sh/uv/) for environment and dependency management
+- A [Mistral AI API key](https://docs.mistral.ai/developers/quickstarts/first-api-request)
+- Optional: Docker if you want to containerize the server yourself
 
 ## Installation
 
-### Using Docker (Recommended)
+### Using Docker
 
 1. Clone this repository:
    ```bash
@@ -84,7 +84,7 @@ The server provides essential web crawling and search tools:
 
 3. Create a `.env` file based on the configuration section below
 
-### Using uv directly (no Docker)
+### Using uv directly
 
 1. Clone this repository:
    ```bash
@@ -99,7 +99,7 @@ The server provides essential web crawling and search tools:
 
 3. Create and activate a virtual environment:
    ```bash
-   uv venv
+   uv venv .venv --python 3.12
    .venv\Scripts\activate
    # on Mac/Linux: source .venv/bin/activate
    ```
@@ -118,13 +118,13 @@ The server provides essential web crawling and search tools:
 
 ## Database Setup
 
-Before running the server, you need to set up the database with the pgvector extension:
+No external database setup is required. The server initializes its Kuzu schema automatically inside `KUZU_DB_PATH`.
 
-1. Go to the SQL Editor in your Supabase dashboard (create a new project first if necessary)
+If you want a quick smoke test for the embedded database layer, run:
 
-2. Create a new query and paste the contents of `crawled_pages.sql`
-
-3. Run the query to create the necessary tables and functions
+```bash
+uv run python scripts/verify_kuzu.py
+```
 
 ## Configuration
 
@@ -136,11 +136,14 @@ HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key
+# Mistral AI Configuration
+MISTRAL_API_KEY=your_mistral_api_key
+MODEL_CHOICE=mistral-small-latest
+EMBEDDING_MODEL=mistral-embed
+EMBEDDING_DIMENSIONS=1024
 
-# LLM for summaries and contextual embeddings
-MODEL_CHOICE=gpt-4.1-nano
+# Local Kuzu database
+KUZU_DB_PATH=./data/kuzu_db
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
@@ -148,9 +151,10 @@ USE_HYBRID_SEARCH=false
 USE_AGENTIC_RAG=false
 USE_RERANKING=false
 
-# Supabase Configuration
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_KEY=your_supabase_service_key
+# FlashRank Configuration
+RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
+RERANKER_CACHE_DIR=./data/flashrank_cache
+RERANKER_MAX_LENGTH=512
 ```
 
 ### RAG Strategy Options
@@ -165,14 +169,14 @@ When enabled, this strategy enhances each chunk's embedding with additional cont
 - **Cost**: Additional LLM API calls during indexing.
 
 #### 2. **USE_HYBRID_SEARCH**
-Combines traditional keyword search with semantic vector search to provide more comprehensive results. The system performs both searches in parallel and intelligently merges results, prioritizing documents that appear in both result sets.
+Combines keyword search and vector search, then merges them with reciprocal rank fusion (RRF) for more comprehensive retrieval.
 
 - **When to use**: Enable this when users might search using specific technical terms, function names, or when exact keyword matches are important alongside semantic understanding.
 - **Trade-offs**: Slightly slower search queries but more robust results, especially for technical content.
 - **Cost**: No additional API costs, just computational overhead.
 
 #### 3. **USE_AGENTIC_RAG**
-Enables specialized code example extraction and storage. When crawling documentation, the system identifies code blocks (≥300 characters), extracts them with surrounding context, generates summaries, and stores them in a separate vector database table specifically designed for code search.
+Enables specialized code example extraction and storage. When crawling documentation, the system identifies code blocks, extracts them with surrounding context, generates summaries with Mistral, and stores them in a dedicated Kuzu node table for code search.
 
 - **When to use**: Essential for AI coding assistants that need to find specific code examples, implementation patterns, or usage examples from documentation.
 - **Trade-offs**: Significantly slower crawling due to code extraction and summarization, requires more storage space.
@@ -180,7 +184,7 @@ Enables specialized code example extraction and storage. When crawling documenta
 - **Benefits**: Provides a dedicated `search_code_examples` tool that AI agents can use to find specific code implementations.
 
 #### 4. **USE_RERANKING**
-Applies cross-encoder reranking to search results after initial retrieval. Uses a lightweight cross-encoder model (`cross-encoder/ms-marco-MiniLM-L-6-v2`) to score each result against the original query, then reorders results by relevance.
+Applies FlashRank reranking to search results after initial retrieval. Uses a lightweight ONNX model (`ms-marco-MiniLM-L-12-v2` by default) to score each result against the original query, then reorders results by relevance.
 
 - **When to use**: Enable this when search precision is critical and you need the most relevant results at the top. Particularly useful for complex queries where semantic similarity alone might not capture query intent.
 - **Trade-offs**: Adds ~100-200ms to search queries depending on result count, but significantly improves result ordering.
@@ -272,9 +276,8 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "args": ["run", "crawl4ai-mcp"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
-        "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key"
+        "MISTRAL_API_KEY": "your_mistral_api_key",
+        "KUZU_DB_PATH": "./data/kuzu_db"
       }
     }
   }
@@ -290,15 +293,13 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "command": "docker",
       "args": ["run", "--rm", "-i", 
                "-e", "TRANSPORT", 
-               "-e", "OPENAI_API_KEY", 
-               "-e", "SUPABASE_URL", 
-               "-e", "SUPABASE_SERVICE_KEY", 
+               "-e", "MISTRAL_API_KEY", 
+               "-e", "KUZU_DB_PATH", 
                "mcp/crawl4ai"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
-        "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key"
+        "MISTRAL_API_KEY": "your_mistral_api_key",
+        "KUZU_DB_PATH": "./data/kuzu_db"
       }
     }
   }
