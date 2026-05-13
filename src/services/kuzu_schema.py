@@ -1,9 +1,12 @@
 """Kuzu schema initialization and index management."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import kuzu
+
+logger = logging.getLogger(__name__)
 
 
 def init_db(db_path: str, embedding_dimensions: int) -> kuzu.Connection:
@@ -22,8 +25,20 @@ def init_db(db_path: str, embedding_dimensions: int) -> kuzu.Connection:
 
 
 def _load_extensions(connection: kuzu.Connection) -> None:
-    for statement in ("INSTALL VECTOR;", "LOAD VECTOR;", "INSTALL FTS;", "LOAD FTS;"):
-        connection.execute(statement)
+    """Load Kuzu extensions with error handling for already-installed extensions."""
+    statements = [
+        ("INSTALL VECTOR;", "vector"),
+        ("LOAD VECTOR;", "vector"),
+        ("INSTALL FTS;", "fts"),
+        ("LOAD FTS;", "fts"),
+    ]
+    for statement, ext_name in statements:
+        try:
+            connection.execute(statement)
+        except Exception as e:
+            # Extensions might already be installed/loaded, log and continue
+            logger.debug(f"Extension operation '{statement}' failed: {e}")
+            continue
 
 
 def _create_schema(connection: kuzu.Connection, embedding_dimensions: int) -> None:

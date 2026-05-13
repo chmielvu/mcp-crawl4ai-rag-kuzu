@@ -273,11 +273,36 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
   "mcpServers": {
     "crawl4ai-rag": {
       "command": "uv",
-      "args": ["run", "crawl4ai-mcp"],
+      "args": ["--directory", "/absolute/path/to/mcp-crawl4ai-rag-kuzu", "run", "crawl4ai-mcp"],
       "env": {
         "TRANSPORT": "stdio",
         "MISTRAL_API_KEY": "your_mistral_api_key",
-        "KUZU_DB_PATH": "./data/kuzu_db"
+        "KUZU_DB_PATH": "./data/kuzu_db",
+        "CRAWL4AI_BASE_DIRECTORY": "."
+      }
+    }
+  }
+}
+```
+
+For Codex on Windows, the equivalent command is:
+
+```json
+{
+  "mcpServers": {
+    "crawl4ai-rag-kuzu": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\Users\\Jan\\Documents\\GitHub\\1Agents1\\.CLI\\mcp-crawl4ai-rag-kuzu",
+        "run",
+        "crawl4ai-mcp"
+      ],
+      "env": {
+        "TRANSPORT": "stdio",
+        "MISTRAL_API_KEY": "your_mistral_api_key",
+        "KUZU_DB_PATH": "./data/kuzu_db",
+        "CRAWL4AI_BASE_DIRECTORY": "."
       }
     }
   }
@@ -314,3 +339,40 @@ This implementation provides a foundation for building more complex MCP servers 
 2. Create your own lifespan function to add your own dependencies
 3. Modify the `utils.py` file for any helper functions you need
 4. Extend the crawling capabilities by adding more specialized crawlers
+
+## Troubleshooting
+
+### Playwright Browser Not Found
+
+If you see errors like:
+```
+BrowserType.launch: Executable doesn't exist at ...\ms-playwright\chromium-1169\chrome.exe
+```
+
+The Playwright browsers need to be installed in the project's venv:
+
+```bash
+# Install Playwright browsers into the project venv
+PLAYWRIGHT_BROWSERS_PATH=.venv/playwright uv run playwright install chromium
+```
+
+The server automatically detects and uses browsers installed in `.venv/playwright/`.
+
+### MCP Server Connection Failures (Error -32000)
+
+If the MCP server fails to connect intermittently:
+
+1. **Check Playwright browsers** - Ensure browsers are installed in `.venv/playwright/`
+2. **Check the data directory** - Ensure `./data/kuzu_db` exists and is writable
+3. **Restart the server** - Kill any existing processes and restart
+
+### Locked Executable on Windows
+
+If `uv pip install -e .` fails with "Access denied" on the executable:
+
+1. Kill any running MCP server processes
+2. Manually copy updated files:
+   ```bash
+   cp src/*.py .venv/Lib/site-packages/crawl4ai_mcp/
+   ```
+3. Or restart your terminal/IDE to release the file lock
