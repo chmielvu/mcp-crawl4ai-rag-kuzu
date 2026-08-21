@@ -1,19 +1,58 @@
+# Environment files and credentials
 .env
-.venv
-__pycache__
-crawl4ai_mcp.egg-info
+.env.*
+!.env.example
 
-.vscode
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+crawl4ai_mcp.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing and coverage artifacts
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# Package manager and runtime caches
+.uv-cache/
+uv-cache/
+.crawl4ai/
+repomix-output.*
+.agent/
+.kindly/
+
+# Local data and cache stores
 data/
+lancedb_data/
+supabase/
 
-supabase
+# PRP temporary document stores
+PRPs/code_reviews/
+PRPs/ai_docs/
 
-PRPs/code_reviews
-PRPs/ai_docs
-
+# MCP configuration and log files
 .mcp.json
-
-# Cache directories
-.mypy_cache
-.pytest_cache
-.ruff_cache
+*.log

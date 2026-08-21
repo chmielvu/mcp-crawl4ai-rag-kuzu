@@ -1,13 +1,15 @@
-"""Tool for searching code examples."""
+"""Tool for searching code chunks in the indexed graph content."""
 
-import json
+import logging
 
 from mcp.server.fastmcp import Context
 
 from crawl4ai_mcp.mcp_server import mcp
-from crawl4ai_mcp.models import CrawlContext
+from crawl4ai_mcp.models import CodeSearchResponse, GraphOperationResult, get_server_context
+from crawl4ai_mcp.services.falkor_search_backend import FalkorSearchBackend
 from crawl4ai_mcp.services.search import SearchService
-from crawl4ai_mcp.utilities.reranking import Reranker
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -15,80 +17,75 @@ async def search_code_examples(
     ctx: Context,
     query: str,
     source_id: str | None = None,
+    language: str | None = None,
     match_count: int = 5,
-) -> str:
-    """Search for code examples in the stored content."""
+    use_reranking: bool | None = None,
+) -> CodeSearchResponse:
+    """Search for code chunks in the stored graph content."""
     try:
-        context: CrawlContext = ctx.request_context.lifespan_context
+        context = get_server_context(ctx)
         settings = context.settings
-        if not settings.use_agentic_rag:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        "Code example extraction is not enabled. "
-                        "Set USE_AGENTIC_RAG=true to enable it."
-                    ),
-                    "results": [],
-                }
+
+        backend = context.search_backend
+        if backend is None and hasattr(context.graph_store, "graph"):
+            backend = FalkorSearchBackend(
+                graph=context.graph_store.graph,
+                settings=settings,
             )
 
-        search_service = SearchService(context.db_connection, settings)
-        results = await search_service.search_code_examples(
-            query=query,
-            language=None,
-            match_count=match_count * 2,
-            source_id=source_id,
+        if backend is None:
+            raise RuntimeError("Search backend is not initialized")
+
+        search_service = SearchService(
+            backend=backend,
+            embeddings=context.embeddings,
+            reranker=context.reranker,
+            settings=settings,
         )
-        if not results:
-            return json.dumps(
-                {
-                    "success": True,
-                    "query": query,
-                    "results": [],
-                    "total_results": 0,
-                    "message": "No code examples found matching the query",
-                }
+
+        effective_reranking = bool(
+            (
+                use_reranking
+                if use_reranking is not None
+                else getattr(settings, "use_reranking", False)
             )
+            and context.reranker is not None
+        )
 
-        if settings.use_reranking and context.reranking_model:
-            for result in results:
-                result["content_for_rerank"] = result.get("summary", result.get("content", ""))
-            reranker = Reranker(model=context.reranking_model, settings=settings)
-            results = reranker.rerank_results(query, results, content_key="content_for_rerank")
-            results = reranker.filter_by_threshold(
-                results,
-                threshold=settings.default_rerank_threshold,
-            )
+        fetch_count = max(match_count * 2, 10) if effective_reranking else match_count
 
-        formatted_results = []
-        for result in results[:match_count]:
-            formatted_result = {
-                "code": result.get("content", ""),
-                "language": result.get("metadata", {}).get("language", "unknown"),
-                "summary": result.get("metadata", {}).get("summary", ""),
-                "url": result.get("url", ""),
-                "source": result.get("source_id", ""),
-                "chunk_number": result.get("chunk_number", 0),
-                "similarity_score": result.get("similarity", 0.0),
-                "metadata": result.get("metadata", {}),
-            }
-            if "rerank_score" in result:
-                formatted_result["rerank_score"] = result["rerank_score"]
-            formatted_results.append(formatted_result)
+        hits = await search_service.search_code_examples(
+            query=query,
+            language=language,
+            match_count=fetch_count,
+            site_id=source_id,
+        )
 
-        return json.dumps(
-            {
-                "success": True,
-                "query": query,
-                "results": formatted_results,
-                "total_results": len(formatted_results),
-                "source_filter": source_id,
-                "reranking_applied": settings.use_reranking,
-                "message": f"Found {len(formatted_results)} code examples",
-            }
+        if effective_reranking and hits:
+            hits = await search_service.rerank_hits(query, hits)
+
+        final_hits = hits[:match_count]
+
+        return CodeSearchResponse(
+            success=True,
+            query=query,
+            results=final_hits,
+            total_results=len(final_hits),
+            source_filter=source_id,
+            language=language,
+            reranking_applied=effective_reranking,
+            message=f"Found {len(final_hits)} code examples for query: {query}",
         )
     except Exception as error:
-        return json.dumps(
-            {"success": False, "error": str(error), "query": query, "results": []}
+        logger.error("search_code_examples error: %s", error, exc_info=True)
+        return CodeSearchResponse(
+            success=False,
+            query=query,
+            results=[],
+            total_results=0,
+            source_filter=source_id,
+            language=language,
+            reranking_applied=False,
+            error=GraphOperationResult(success=False, error=str(error)),
+            message=f"Code search failed: {error}",
         )

@@ -1,14 +1,49 @@
-"""Pydantic models for data validation and type safety."""
+"""Request models, typed server context, and contract re-exports."""
 
-from datetime import datetime
+from __future__ import annotations
+
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationInfo, field_validator
 
+from crawl4ai_mcp.services.contracts import (
+    AvailableSitesResponse,
+    ChatGeneratorPort,
+    CodeSearchResponse,
+    CrawlDocument,
+    CrawlFailure,
+    CrawlIngestion,
+    CrawlerPort,
+    EmbeddingPort,
+    GlinerEntity,
+    GlinerExtraction,
+    GlinerPort,
+    GlinerRelation,
+    GraphOperationResult,
+    GraphStorePort,
+    LangExtractPort,
+    PageExtraction,
+    PagePayload,
+    RagSearchResponse,
+    RemoteLink,
+    RemoteMarkdown,
+    RerankResult,
+    RerankerPort,
+    SearchBackendPort,
+    SearchHit,
+    SiteInfo,
+    SitePayload,
+    SingleCrawlResponse,
+    SmartCrawlResponse,
+)
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import Context
+
 
 class CrawlType(str, Enum):
-    """Types of crawling operations."""
+    """Types of crawl operations exposed by the tools."""
 
     SINGLE_PAGE = "single_page"
     SITEMAP = "sitemap"
@@ -17,7 +52,7 @@ class CrawlType(str, Enum):
 
 
 class SearchType(str, Enum):
-    """Types of search operations."""
+    """Search modes supported by the graph search service."""
 
     SEMANTIC = "semantic"
     HYBRID = "hybrid"
@@ -25,18 +60,40 @@ class SearchType(str, Enum):
 
 
 class CrawlRequest(BaseModel):
-    """Request model for crawling operations."""
+    """Validated single/recursive crawl request."""
 
     url: HttpUrl
     max_depth: int = Field(default=3, ge=1, le=10)
     max_concurrent: int = Field(default=10, ge=1, le=50)
     chunk_size: int = Field(default=5000, ge=100, le=10000)
     overlap: int = Field(default=200, ge=0, le=1000)
-    extract_code_examples: Optional[bool] = None
+    extract_code_examples: bool | None = None
 
     @field_validator("overlap")
+    @classmethod
     def validate_overlap(cls, value: int, info: ValidationInfo) -> int:
-        """Ensure overlap is less than chunk size."""
+        """Ensure overlap is smaller than the configured chunk size."""
+
+        chunk_size = info.data.get("chunk_size", 5000)
+        if value >= chunk_size:
+            raise ValueError("Overlap must be less than chunk size")
+        return value
+
+
+class BatchCrawlRequest(BaseModel):
+    """Validated batch crawl request."""
+
+    urls: list[HttpUrl]
+    max_concurrent: int = Field(default=10, ge=1, le=50)
+    chunk_size: int = Field(default=5000, ge=100, le=10000)
+    overlap: int = Field(default=200, ge=0, le=1000)
+    extract_code_examples: bool | None = None
+
+    @field_validator("overlap")
+    @classmethod
+    def validate_overlap(cls, value: int, info: ValidationInfo) -> int:
+        """Ensure overlap is smaller than the configured chunk size."""
+
         chunk_size = info.data.get("chunk_size", 5000)
         if value >= chunk_size:
             raise ValueError("Overlap must be less than chunk size")
@@ -44,139 +101,81 @@ class CrawlRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """Request model for search operations."""
+    """Validated document search request."""
 
     query: str = Field(min_length=1, max_length=1000)
-    source: Optional[str] = None
+    source: str | None = None
     num_results: int = Field(default=5, ge=1, le=20)
-    semantic_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    use_reranking: Optional[bool] = None
-    use_hybrid_search: Optional[bool] = None
+    semantic_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    use_reranking: bool | None = None
+    use_hybrid_search: bool | None = None
 
 
 class CodeSearchRequest(BaseModel):
-    """Request model for code search operations."""
+    """Validated code-chunk search request."""
 
     query: str = Field(min_length=1, max_length=500)
-    language: Optional[str] = None
-    source: Optional[str] = None
+    language: str | None = None
+    source: str | None = None
     num_results: int = Field(default=5, ge=1, le=20)
 
 
-class CrawlResult(BaseModel):
-    """Result model for crawling operations."""
-
-    success: bool
-    url: str
-    crawl_type: CrawlType
-    pages_crawled: int = 0
-    chunks_stored: int = 0
-    code_examples_stored: int = 0
-    error: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SearchResult(BaseModel):
-    """Result model for a single search result."""
-
-    content: str
-    url: str
-    source: str
-    chunk_number: int
-    similarity_score: float
-    rerank_score: Optional[float] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SearchResponse(BaseModel):
-    """Response model for search operations."""
-
-    success: bool
-    results: List[SearchResult]
-    total_results: int
-    search_type: SearchType
-    error: Optional[str] = None
-
-
-class CodeExample(BaseModel):
-    """Model for code examples."""
-
-    code: str
-    language: str
-    context: str
-    summary: str
-    url: str
-    source: str
-    created_at: Optional[datetime] = None
-
-
-class RAGResponse(BaseModel):
-    """Response model for RAG queries."""
-
-    success: bool
-    answer: str
-    sources: List[Dict[str, Any]]
-    search_type: SearchType
-    total_sources: int
-    error: Optional[str] = None
-
-
-class SourceInfo(BaseModel):
-    """Model for source information."""
-
-    source: str
-    total_documents: int
-    total_chunks: int
-    total_code_examples: int
-    word_count: int
-    last_updated: datetime
-    summary: Optional[str] = None
-
-
-class Document(BaseModel):
-    """Model for document chunks."""
-
-    url: str
-    content: str
-    chunk_number: int
-    total_chunks: int
-    word_count: int
-    source: str
-    section_title: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    embedding: Optional[List[float]] = None
-    contextual_content: Optional[str] = None
-
-
 class CrawlContext(BaseModel):
-    """Context for crawling operations."""
+    """Typed resources initialized by the FastMCP lifespan."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    crawler: Any
-    db_connection: Any
-    reranking_model: Any = None
+    crawler: CrawlerPort
+    embeddings: EmbeddingPort
+    reranker: RerankerPort | None = None
+    gliner: GlinerPort | None = None
+    chat: ChatGeneratorPort
+    graph_store: GraphStorePort
+    lang_extract: LangExtractPort | None = None
     settings: Any
+    search_backend: SearchBackendPort | None = None
 
 
-class BatchCrawlRequest(BaseModel):
-    """Request model for batch crawling operations."""
+def get_server_context(ctx: Context) -> CrawlContext:
+    """Return the initialized lifespan context or raise a clear server error."""
 
-    urls: List[HttpUrl]
-    max_concurrent: int = Field(default=10, ge=1, le=50)
-    chunk_size: int = Field(default=5000, ge=100, le=10000)
-    overlap: int = Field(default=200, ge=0, le=1000)
-    extract_code_examples: Optional[bool] = None
+    request_context = getattr(ctx, "request_context", None)
+    lifespan_context = getattr(request_context, "lifespan_context", None)
+    if not isinstance(lifespan_context, CrawlContext):
+        raise RuntimeError(
+            "FastMCP server lifespan is not initialized; request context is unavailable"
+        )
+    return lifespan_context
 
 
-class BatchCrawlResult(BaseModel):
-    """Result model for batch crawling operations."""
-
-    success: bool
-    total_urls: int
-    successful_urls: int
-    failed_urls: int
-    total_chunks_stored: int
-    total_code_examples_stored: int
-    results: List[CrawlResult]
-    error: Optional[str] = None
+__all__ = [
+    "CrawlType",
+    "SearchType",
+    "CrawlRequest",
+    "BatchCrawlRequest",
+    "SearchRequest",
+    "CodeSearchRequest",
+    "CrawlContext",
+    "get_server_context",
+    "RemoteLink",
+    "RemoteMarkdown",
+    "CrawlDocument",
+    "CrawlFailure",
+    "RerankResult",
+    "GlinerEntity",
+    "GlinerRelation",
+    "GlinerExtraction",
+    "SearchHit",
+    "SiteInfo",
+    "PageExtraction",
+    "PagePayload",
+    "SitePayload",
+    "CrawlIngestion",
+    "GraphOperationResult",
+    "SingleCrawlResponse",
+    "SmartCrawlResponse",
+    "RagSearchResponse",
+    "LangExtractPort",
+    "CodeSearchResponse",
+    "AvailableSitesResponse",
+]

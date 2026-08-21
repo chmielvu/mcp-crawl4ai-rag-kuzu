@@ -1,13 +1,15 @@
-"""Tool for performing RAG queries."""
+"""Tool for performing semantic/hybrid RAG queries against indexed content."""
 
-import json
+import logging
 
 from mcp.server.fastmcp import Context
 
 from crawl4ai_mcp.mcp_server import mcp
-from crawl4ai_mcp.models import CrawlContext, SearchRequest, SearchType
+from crawl4ai_mcp.models import GraphOperationResult, RagSearchResponse, get_server_context
+from crawl4ai_mcp.services.falkor_search_backend import FalkorSearchBackend
 from crawl4ai_mcp.services.search import SearchService
-from crawl4ai_mcp.utilities.reranking import Reranker
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -16,82 +18,75 @@ async def perform_rag_query(
     query: str,
     source: str | None = None,
     match_count: int = 5,
-) -> str:
-    """Perform a RAG query on stored content."""
+    use_hybrid: bool | None = None,
+    use_reranking: bool | None = None,
+) -> RagSearchResponse:
+    """Perform a RAG query on stored content in the graph."""
     try:
-        context: CrawlContext = ctx.request_context.lifespan_context
+        context = get_server_context(ctx)
         settings = context.settings
-        search_service = SearchService(context.db_connection, settings)
 
-        search_response = await search_service.perform_search(
-            SearchRequest(
-                query=query,
-                source=source,
-                num_results=match_count,
-                semantic_threshold=settings.default_semantic_threshold,
-            ),
-            search_type=(
-                SearchType.HYBRID if settings.use_hybrid_search else SearchType.SEMANTIC
-            ),
-            include_code_examples=False,
+        backend = context.search_backend
+        if backend is None and hasattr(context.graph_store, "graph"):
+            backend = FalkorSearchBackend(
+                graph=context.graph_store.graph,
+                settings=settings,
+            )
+
+        if backend is None:
+            raise RuntimeError("Search backend is not initialized")
+
+        search_service = SearchService(
+            backend=backend,
+            embeddings=context.embeddings,
+            reranker=context.reranker,
+            settings=settings,
         )
-        if not search_response.success:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": search_response.error or "Search failed",
-                    "results": [],
-                }
+
+        effective_hybrid = (
+            use_hybrid
+            if use_hybrid is not None
+            else getattr(settings, "use_hybrid_search", False)
+        )
+        effective_reranking = bool(
+            (
+                use_reranking
+                if use_reranking is not None
+                else getattr(settings, "use_reranking", False)
             )
+            and context.reranker is not None
+        )
 
-        results_dict = [
-            {
-                "content": result.content,
-                "url": result.url,
-                "source": result.source,
-                "chunk_number": result.chunk_number,
-                "similarity_score": result.similarity_score,
-                "metadata": result.metadata,
-            }
-            for result in search_response.results
-        ]
-        if settings.use_reranking and results_dict and context.reranking_model:
-            reranker = Reranker(model=context.reranking_model, settings=settings)
-            results_dict = reranker.rerank_results(query, results_dict)
-            results_dict = reranker.filter_by_threshold(
-                results_dict,
-                threshold=settings.default_rerank_threshold,
-            )
+        search_type = "hybrid" if effective_hybrid else "semantic"
 
-        formatted_results = []
-        for result in results_dict[:match_count]:
-            formatted_result = {
-                "content": result["content"],
-                "url": result["url"],
-                "source": result["source"],
-                "chunk_number": result["chunk_number"],
-                "similarity_score": result["similarity_score"],
-                "metadata": result["metadata"],
-            }
-            if "rerank_score" in result:
-                formatted_result["rerank_score"] = result["rerank_score"]
-            formatted_results.append(formatted_result)
+        hits = await search_service.perform_rag_query(
+            query=query,
+            match_count=match_count,
+            site_id=source,
+            use_hybrid=use_hybrid,
+            use_reranking=use_reranking,
+        )
 
-        return json.dumps(
-            {
-                "success": True,
-                "query": query,
-                "search_type": (
-                    SearchType.HYBRID if settings.use_hybrid_search else SearchType.SEMANTIC
-                ).value,
-                "results": formatted_results,
-                "total_results": len(formatted_results),
-                "source_filter": source,
-                "reranking_applied": settings.use_reranking,
-                "message": f"Found {len(formatted_results)} relevant results",
-            }
+        return RagSearchResponse(
+            success=True,
+            query=query,
+            search_type=search_type,
+            results=hits,
+            total_results=len(hits),
+            source_filter=source,
+            reranking_applied=effective_reranking,
+            message=f"Found {len(hits)} results for query: {query}",
         )
     except Exception as error:
-        return json.dumps(
-            {"success": False, "error": str(error), "query": query, "results": []}
+        logger.error("perform_rag_query error: %s", error, exc_info=True)
+        return RagSearchResponse(
+            success=False,
+            query=query,
+            search_type="semantic",
+            results=[],
+            total_results=0,
+            source_filter=source,
+            reranking_applied=False,
+            error=GraphOperationResult(success=False, error=str(error)),
+            message=f"Search failed: {error}",
         )

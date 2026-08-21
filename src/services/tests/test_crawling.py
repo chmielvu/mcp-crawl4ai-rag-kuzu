@@ -1,226 +1,117 @@
-"""Tests for crawling service."""
+"""Tests for CrawlingService web extraction, code extraction, and BFS recursion."""
 
-from unittest.mock import AsyncMock, Mock, patch
-
+import httpx
 import pytest
 
+from crawl4ai_mcp.config import Settings
+from crawl4ai_mcp.conftest import FakeChatGenerator, FakeCrawler
+from crawl4ai_mcp.services.contracts import CrawlDocument, RemoteLink
 from crawl4ai_mcp.services.crawling import CrawlingService
-from crawl4ai_mcp.services.embeddings import EmbeddingService
 
 
 @pytest.fixture
-def mock_crawler():
-    crawler = Mock()
-    crawler.arun = AsyncMock()
-    crawler.arun_many = AsyncMock()
-    return crawler
+def crawling_service(
+    fake_crawler: FakeCrawler,
+    fake_chat: FakeChatGenerator,
+    test_settings: Settings,
+) -> CrawlingService:
+    return CrawlingService(
+        crawler=fake_crawler,
+        chat_generator=fake_chat,
+        settings=test_settings,
+    )
 
 
-@pytest.fixture
-def mock_embedding_service():
-    service = Mock(spec=EmbeddingService)
-    service.chat_complete = AsyncMock(return_value="This code demonstrates a hello world function.")
-    return service
+def test_is_sitemap(crawling_service: CrawlingService) -> None:
+    assert crawling_service.is_sitemap("https://example.com/sitemap.xml") is True
+    assert crawling_service.is_sitemap("https://example.com/docs/sitemap") is True
+    assert crawling_service.is_sitemap("https://example.com/page.html") is False
 
 
-@pytest.fixture
-def crawling_service(mock_crawler, test_settings, mock_embedding_service):
-    return CrawlingService(mock_crawler, test_settings, mock_embedding_service)
+def test_is_txt(crawling_service: CrawlingService) -> None:
+    assert crawling_service.is_txt("https://example.com/urls.txt") is True
+    assert crawling_service.is_txt("https://example.com/page.html") is False
 
 
-class TestUrlChecking:
-    def test_is_sitemap_true(self, crawling_service) -> None:
-        assert crawling_service.is_sitemap("https://example.com/sitemap.xml") is True
-        assert crawling_service.is_sitemap("https://example.com/sitemap/index.xml") is True
+@pytest.mark.asyncio
+async def test_parse_sitemap(crawling_service: CrawlingService) -> None:
+    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://example.com/page1</loc></url>
+        <url><loc>https://example.com/page2</loc></url>
+    </urlset>"""
 
-    def test_is_sitemap_false(self, crawling_service) -> None:
-        assert crawling_service.is_sitemap("https://example.com/index.html") is False
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, text=xml_content, headers={"Content-Type": "application/xml"})
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        urls = await crawling_service.parse_sitemap("https://example.com/sitemap.xml", client=client)
 
-    def test_is_txt_true(self, crawling_service) -> None:
-        assert crawling_service.is_txt("https://example.com/file.txt") is True
-
-    def test_is_txt_false(self, crawling_service) -> None:
-        assert crawling_service.is_txt("https://example.com/file.pdf") is False
-
-
-class TestSitemapParsing:
-    @patch("requests.get")
-    def test_parse_sitemap_success(self, mock_get, crawling_service) -> None:
-        response = Mock()
-        response.status_code = 200
-        response.content = b"""<?xml version="1.0" encoding="UTF-8"?>
-        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-            <url><loc>https://example.com/page1</loc></url>
-            <url><loc>https://example.com/page2</loc></url>
-        </urlset>"""
-        mock_get.return_value = response
-        urls = crawling_service.parse_sitemap("https://example.com/sitemap.xml")
-        assert urls == ["https://example.com/page1", "https://example.com/page2"]
-
-    @patch("requests.get")
-    def test_parse_sitemap_failure(self, mock_get, crawling_service) -> None:
-        response = Mock(status_code=404)
-        mock_get.return_value = response
-        assert crawling_service.parse_sitemap("https://example.com/sitemap.xml") == []
-
-    @patch("requests.get")
-    def test_parse_sitemap_invalid_xml(self, mock_get, crawling_service) -> None:
-        response = Mock(status_code=200, content=b"invalid")
-        mock_get.return_value = response
-        assert crawling_service.parse_sitemap("https://example.com/sitemap.xml") == []
+    assert len(urls) == 2
+    assert "https://example.com/page1" in urls
+    assert "https://example.com/page2" in urls
 
 
-class TestCrawling:
-    @pytest.mark.asyncio
-    async def test_crawl_markdown_file_success(self, crawling_service, mock_crawler) -> None:
-        mock_crawler.arun.return_value = Mock(success=True, markdown="# Test Content")
-        results = await crawling_service.crawl_markdown_file("https://example.com/file.txt")
-        assert results == [{"url": "https://example.com/file.txt", "markdown": "# Test Content"}]
-
-    @pytest.mark.asyncio
-    async def test_crawl_markdown_file_failure(self, crawling_service, mock_crawler) -> None:
-        mock_crawler.arun.return_value = Mock(success=False, error_message="Failed")
-        assert await crawling_service.crawl_markdown_file("https://example.com/file.txt") == []
-
-    @pytest.mark.asyncio
-    async def test_crawl_batch(self, crawling_service, mock_crawler) -> None:
-        mock_crawler.arun_many.return_value = [
-            Mock(success=True, url="https://example.com/1", markdown="Content 1"),
-            Mock(success=True, url="https://example.com/2", markdown="Content 2"),
-            Mock(success=False, url="https://example.com/3", markdown=None, error_message="boom"),
-        ]
-        results = await crawling_service.crawl_batch(["a", "b", "c"], max_concurrent=5)
-        assert results == [
-            {"url": "https://example.com/1", "markdown": "Content 1"},
-            {"url": "https://example.com/2", "markdown": "Content 2"},
-        ]
-
-    @pytest.mark.asyncio
-    async def test_crawl_recursive_internal_links(self, crawling_service, mock_crawler) -> None:
-        mock_crawler.arun_many.side_effect = [
-            [
-                Mock(
-                    success=True,
-                    url="https://example.com/page1",
-                    markdown="Page 1",
-                    links={"internal": [{"href": "https://example.com/page2"}]},
-                )
-            ],
-            [
-                Mock(
-                    success=True,
-                    url="https://example.com/page2",
-                    markdown="Page 2",
-                    links={"internal": []},
-                )
-            ],
-        ]
-        results = await crawling_service.crawl_recursive_internal_links(
-            ["https://example.com/page1"],
-            max_depth=2,
-        )
-        assert results == [
-            {"url": "https://example.com/page1", "markdown": "Page 1"},
-            {"url": "https://example.com/page2", "markdown": "Page 2"},
-        ]
+@pytest.mark.asyncio
+async def test_crawl_markdown_file(
+    crawling_service: CrawlingService, fake_crawler: FakeCrawler
+) -> None:
+    docs = await crawling_service.crawl_markdown_file(
+        "https://example.com/links.txt"
+    )
+    assert len(docs) == 1
+    assert docs[0].success is True
+    assert docs[0].markdown
 
 
-class TestCodeExtraction:
-    def test_extract_code_blocks_simple(self, crawling_service) -> None:
-        markdown = """
-Some text before
-
-```python
-def hello():
-    print("Hello, world!")
-    for i in range(100):
-        print(f"Line {i}")
-    return []
-```
-
-Some text after
-"""
-        code_blocks = crawling_service.extract_code_blocks(markdown, min_length=20)
-        assert len(code_blocks) == 1
-        assert code_blocks[0]["language"] == "python"
-        assert "Some text before" in code_blocks[0]["context_before"]
-
-    def test_extract_code_blocks_skip_short(self, crawling_service) -> None:
-        markdown = """Intro text
-
-```python
-short
-```
-
-```python
-long enough block with extra content here
-```
-"""
-        code_blocks = crawling_service.extract_code_blocks(markdown, min_length=10)
-        assert len(code_blocks) == 1
-
-    @pytest.mark.asyncio
-    async def test_generate_code_example_summary(
-        self, crawling_service, mock_embedding_service
-    ) -> None:
-        mock_embedding_service.chat_complete.return_value = "This code demonstrates a hello world function."
-        summary = await crawling_service.generate_code_example_summary(
-            code="def hello(): print('hello')",
-            context_before="Here's an example:",
-            context_after="That's the basic function.",
-        )
-        assert summary == "This code demonstrates a hello world function."
-
-    @pytest.mark.asyncio
-    async def test_generate_code_example_summary_error(
-        self, crawling_service, mock_embedding_service
-    ) -> None:
-        mock_embedding_service.chat_complete.side_effect = Exception("API error")
-        summary = await crawling_service.generate_code_example_summary(
-            code="def hello(): pass",
-            context_before="",
-            context_after="",
-        )
-        assert summary == "Code example for demonstration purposes."
+def test_extract_code_blocks(crawling_service: CrawlingService) -> None:
+    markdown = (
+        "Here is some introduction text.\n\n"
+        "```python\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+        "```\n\n"
+        "And here is the conclusion."
+    )
+    blocks = crawling_service.extract_code_blocks(markdown, min_length=10)
+    assert len(blocks) == 1
+    b = blocks[0]
+    assert b["language"] == "python"
+    assert "def add(a, b):" in b["code"]
+    assert "introduction text" in b["context_before"]
+    assert "conclusion" in b["context_after"]
+    assert b["start_char"] > 0
+    assert b["end_char"] > b["start_char"]
 
 
-class TestSourceSummary:
-    @pytest.mark.asyncio
-    async def test_extract_source_summary_success(
-        self, crawling_service, mock_embedding_service
-    ) -> None:
-        mock_embedding_service.chat_complete.return_value = "This is a test library."
-        summary = await crawling_service.extract_source_summary(
-            source_id="test-lib",
-            content="This is the documentation for test-lib...",
-        )
-        assert summary == "This is a test library."
+@pytest.mark.asyncio
+async def test_crawl_batch(crawling_service: CrawlingService, fake_crawler: FakeCrawler) -> None:
+    urls = ["https://example.com/p1", "https://example.com/p2"]
+    docs = await crawling_service.crawl_batch(urls, max_concurrent=5)
+    assert len(docs) == 2
+    assert len(fake_crawler.crawl_many_calls) == 1
 
-    @pytest.mark.asyncio
-    async def test_extract_source_summary_empty_content(self, crawling_service) -> None:
-        summary = await crawling_service.extract_source_summary("test-lib", "")
-        assert summary == "Content from test-lib"
 
-    @pytest.mark.asyncio
-    async def test_extract_source_summary_long_result(
-        self, crawling_service, mock_embedding_service
-    ) -> None:
-        mock_embedding_service.chat_complete.return_value = "A" * 600
-        summary = await crawling_service.extract_source_summary(
-            source_id="test-lib",
-            content="Documentation content",
-            max_length=500,
-        )
-        assert len(summary) == 503
-        assert summary.endswith("...")
+@pytest.mark.asyncio
+async def test_crawl_recursive_internal_links(
+    crawling_service: CrawlingService,
+    fake_crawler: FakeCrawler,
+) -> None:
+    root_doc = CrawlDocument(
+        url="https://example.com/root",
+        success=True,
+        markdown="Root markdown",
+        links=[RemoteLink(href="https://example.com/root/child", internal=True)],
+    )
+    child_doc = CrawlDocument(
+        url="https://example.com/root/child",
+        success=True,
+        markdown="Child markdown",
+        links=[],
+    )
+    fake_crawler.documents = [root_doc, child_doc]
 
-    @pytest.mark.asyncio
-    async def test_extract_source_summary_error(
-        self, crawling_service, mock_embedding_service
-    ) -> None:
-        mock_embedding_service.chat_complete.side_effect = Exception("API error")
-        summary = await crawling_service.extract_source_summary(
-            source_id="test-lib",
-            content="Some content",
-        )
-        assert summary == "Content from test-lib"
+    bfs_docs = await crawling_service.crawl_recursive_internal_links(["https://example.com/root"], max_depth=2)
+    assert len(bfs_docs) == 2
+    assert any(d.url == "https://example.com/root" for d in bfs_docs)
+    assert any(d.url == "https://example.com/root/child" for d in bfs_docs)

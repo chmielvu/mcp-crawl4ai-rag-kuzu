@@ -1,251 +1,145 @@
-"""Tests for search service."""
-
-from unittest.mock import AsyncMock, Mock
+"""Tests for SearchService vector, hybrid RRF, reranking, and code search."""
 
 import pytest
 
-from crawl4ai_mcp.models import SearchRequest, SearchResult
-from crawl4ai_mcp.services.embeddings import EmbeddingService
-from crawl4ai_mcp.services.search import SearchService
+from crawl4ai_mcp.config import Settings
+from crawl4ai_mcp.conftest import FakeEmbedding, FakeReranker, FakeSearchBackend
+from crawl4ai_mcp.services.contracts import RerankResult, SearchHit
+from crawl4ai_mcp.services.search import SearchService, _rrf_fuse
 
 
 @pytest.fixture
-def mock_embedding_service():
-    service = Mock(spec=EmbeddingService)
-    service.create_embedding = AsyncMock(return_value=[0.1] * 1024)
-    return service
-
-
-@pytest.fixture
-def search_service(mock_db_connection, test_settings, mock_embedding_service):
-    return SearchService(mock_db_connection, test_settings, mock_embedding_service)
-
-
-@pytest.fixture
-def mock_search_rows():
-    return [
-        {
-            "content": "First result content",
-            "url": "https://example.com/1",
-            "source_id": "example.com",
-            "chunk_number": 1,
-            "similarity": 0.9,
-            "metadata": {"title": "First"},
-        },
-        {
-            "content": "Second result content",
-            "url": "https://example.com/2",
-            "source_id": "example.com",
-            "chunk_number": 2,
-            "similarity": 0.8,
-            "metadata": {"title": "Second", "category": "tutorial"},
-        },
-    ]
-
-
-@pytest.fixture
-def mock_code_rows():
-    return [
-        {
-            "content": 'def example():\n    return "Hello"',
-            "url": "https://example.com/code1",
-            "source_id": "example.com",
-            "chunk_number": 1,
-            "similarity": 0.85,
-            "metadata": {"language": "python", "summary": "Example function"},
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_search_documents_success(search_service, mock_search_rows) -> None:
-    search_service.backend.search_documents_by_vector = Mock(return_value=mock_search_rows)
-    results = await search_service.search_documents("test query", match_count=10)
-    assert len(results) == 2
-    assert isinstance(results[0], SearchResult)
-    assert results[0].content == "First result content"
-    assert results[0].similarity_score == 0.9
-
-
-@pytest.mark.asyncio
-async def test_search_documents_with_filters(search_service, mock_search_rows) -> None:
-    search_service.backend.search_documents_by_vector = Mock(return_value=mock_search_rows)
-    results = await search_service.search_documents(
-        "test query",
-        match_count=10,
-        filter_metadata={"category": "tutorial"},
+def search_service(
+    fake_search_backend: FakeSearchBackend,
+    fake_embedding: FakeEmbedding,
+    fake_reranker: FakeReranker,
+    test_settings: Settings,
+) -> SearchService:
+    return SearchService(
+        backend=fake_search_backend,
+        embeddings=fake_embedding,
+        reranker=fake_reranker,
+        settings=test_settings,
     )
-    assert len(results) == 1
-    assert results[0].url == "https://example.com/2"
 
 
-@pytest.mark.asyncio
-async def test_search_documents_hybrid_search(search_service, mock_search_rows) -> None:
-    text_rows = [
-        {
-            "content": "Keyword match",
-            "url": "https://example.com/3",
-            "source_id": "example.com",
-            "chunk_number": 3,
-            "similarity": 1.2,
-            "metadata": {"title": "Keyword"},
-        }
-    ]
-    search_service.backend.search_documents_by_vector = Mock(return_value=mock_search_rows)
-    search_service.backend.search_documents_by_text = Mock(return_value=text_rows)
-    results = await search_service.search_documents(
-        "test query",
-        match_count=2,
-        use_hybrid_search=True,
+def _make_hit(chunk_id: str, score: float, text: str = "hit text", content_type: str = "text") -> SearchHit:
+    return SearchHit(
+        chunk_id=chunk_id,
+        page_id="page1",
+        site_id="example.com",
+        content=text,
+        url="https://example.com/p",
+        source="example.com",
+        chunk_number=0,
+        similarity_score=score,
+        rerank_score=None,
+        content_type=content_type,
+        language="en",
+        metadata={},
+        provenance=[],
     )
-    assert len(results) == 2
-    search_service.backend.search_documents_by_text.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_search_code_examples_success(search_service, mock_code_rows) -> None:
-    search_service.backend.search_code_by_vector = Mock(return_value=mock_code_rows)
-    results = await search_service.search_code_examples("example function", match_count=5)
-    assert len(results) == 1
-    assert results[0]["content"].startswith("def example")
-
-
-@pytest.mark.asyncio
-async def test_search_code_examples_with_language_filter(
-    search_service, mock_code_rows
+async def test_search_documents_semantic(
+    search_service: SearchService,
+    fake_search_backend: FakeSearchBackend,
+    fake_embedding: FakeEmbedding,
 ) -> None:
-    search_service.backend.search_code_by_vector = Mock(return_value=mock_code_rows)
+    hit1 = _make_hit("c1", 0.9)
+    hit2 = _make_hit("c2", 0.7)
+    fake_search_backend.vector_hits = [hit1, hit2]
+
+    results = await search_service.search_documents("query test", match_count=5, use_hybrid=False)
+
+    assert len(fake_embedding.embed_query_calls) == 1
+    assert len(results) == 2
+    assert results[0].chunk_id == "c1"
+    assert results[1].chunk_id == "c2"
+
+
+@pytest.mark.asyncio
+async def test_search_documents_hybrid_rrf(
+    search_service: SearchService,
+    fake_search_backend: FakeSearchBackend,
+) -> None:
+    hit1_v = _make_hit("c1", 0.95, text="c1 text")
+    hit2_v = _make_hit("c2", 0.80, text="c2 text")
+    hit1_t = _make_hit("c1", 5.0, text="c1 text")
+    hit3_t = _make_hit("c3", 4.0, text="c3 text")
+
+    fake_search_backend.vector_hits = [hit1_v, hit2_v]
+    fake_search_backend.text_hits = [hit1_t, hit3_t]
+
+    results = await search_service.search_documents("hybrid query", match_count=5, use_hybrid=True)
+
+    assert len(results) == 3
+    # c1 was rank 0 in both vector and text -> highest RRF score
+    assert results[0].chunk_id == "c1"
+
+
+@pytest.mark.asyncio
+async def test_search_documents_with_reranking(
+    search_service: SearchService,
+    fake_search_backend: FakeSearchBackend,
+    fake_reranker: FakeReranker,
+) -> None:
+    hit1 = _make_hit("c1", 0.9, text="first hit")
+    hit2 = _make_hit("c2", 0.8, text="second hit")
+    fake_search_backend.vector_hits = [hit1, hit2]
+
+    fake_reranker.custom_results = [
+        RerankResult(id=1, text="second hit", score=0.99),
+        RerankResult(id=0, text="first hit", score=0.45),
+    ]
+
+    # Test rerank_hits method directly
+    reranked = await search_service.rerank_hits("query", [hit1, hit2])
+    assert reranked[0].chunk_id == "c2"
+    assert reranked[0].rerank_score == 0.99
+    assert reranked[1].chunk_id == "c1"
+    assert reranked[1].rerank_score == 0.45
+
+
+@pytest.mark.asyncio
+async def test_search_code_examples(
+    search_service: SearchService,
+    fake_search_backend: FakeSearchBackend,
+) -> None:
+    code_hit = _make_hit("code1", 0.92, text="def foo(): pass", content_type="code")
+    code_hit.language = "python"
+    fake_search_backend.code_hits = [code_hit]
+
     results = await search_service.search_code_examples(
-        "example function",
-        language="python",
-        match_count=5,
+        "foo function", site_id="example.com", language="python", match_count=3
     )
+
     assert len(results) == 1
-    assert results[0]["metadata"]["language"] == "python"
+    assert results[0].chunk_id == "code1"
+    assert results[0].content_type == "code"
+    assert len(fake_search_backend.code_calls) == 1
+    assert fake_search_backend.code_calls[0]["language"] == "python"
 
 
 @pytest.mark.asyncio
-async def test_perform_search_documents_only(search_service) -> None:
-    search_service.search_documents = AsyncMock(
-        return_value=[
-            SearchResult(
-                content="First",
-                url="url1",
-                source="src",
-                chunk_number=1,
-                similarity_score=0.9,
-            ),
-            SearchResult(
-                content="Second",
-                url="url2",
-                source="src",
-                chunk_number=2,
-                similarity_score=0.7,
-            ),
-        ]
-    )
-    response = await search_service.perform_search(
-        SearchRequest(query="test query", num_results=5, semantic_threshold=0.75)
-    )
-    assert response.success is True
-    assert len(response.results) == 1
-    assert response.results[0].content == "First"
+async def test_perform_rag_query(
+    search_service: SearchService,
+    fake_search_backend: FakeSearchBackend,
+) -> None:
+    hit1 = _make_hit("c1", 0.9, text="rag hit")
+    fake_search_backend.vector_hits = [hit1]
+
+    results = await search_service.perform_rag_query("test rag", match_count=5, use_hybrid=False)
+    assert len(results) == 1
+    assert results[0].chunk_id == "c1"
+    assert len(fake_search_backend.provenance_calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_perform_search_with_code_examples(search_service, test_settings) -> None:
-    test_settings.use_agentic_rag = True
-    search_service.search_documents = AsyncMock(
-        return_value=[
-            SearchResult(
-                content="Doc",
-                url="doc-url",
-                source="src",
-                chunk_number=1,
-                similarity_score=0.9,
-            )
-        ]
-    )
-    search_service.search_code_examples = AsyncMock(
-        return_value=[
-            {
-                "content": "def example(): pass",
-                "url": "code-url",
-                "source_id": "src",
-                "chunk_number": 1,
-                "similarity": 0.85,
-                "metadata": {"language": "python", "summary": "Example"},
-            }
-        ]
-    )
-    response = await search_service.perform_search(
-        SearchRequest(query="test query", num_results=5),
-        include_code_examples=True,
-    )
-    assert response.success is True
-    assert len(response.results) == 2
-    assert any(result.metadata.get("type") == "code_example" for result in response.results)
-
-
-@pytest.mark.asyncio
-async def test_perform_search_error_handling(search_service) -> None:
-    search_service.search_documents = AsyncMock(side_effect=Exception("Search failed"))
-    response = await search_service.perform_search(SearchRequest(query="test query"))
-    assert response.success is False
-    assert response.total_results == 0
-
-
-@pytest.mark.asyncio
-async def test_rerank_results_flashrank(search_service) -> None:
-    reranking_model = Mock()
-    reranking_model.rerank.return_value = [{"id": 1, "score": 0.95}, {"id": 0, "score": 0.85}]
-    results = [
-        SearchResult(content="First", url="url1", source="src", chunk_number=1, similarity_score=0.7),
-        SearchResult(content="Second", url="url2", source="src", chunk_number=2, similarity_score=0.8),
-    ]
-    reranked = await search_service.rerank_results(
-        query="test query",
-        results=results,
-        reranking_model=reranking_model,
-        threshold=0.5,
-    )
-    assert len(reranked) == 2
-    assert reranked[0].content == "Second"
-    assert reranked[0].rerank_score == 0.95
-
-
-@pytest.mark.asyncio
-async def test_rerank_results_legacy_predict(search_service) -> None:
-    class LegacyPredictModel:
-        def predict(self, pairs):
-            assert len(pairs) == 2
-            return [0.9, 0.2]
-
-    reranking_model = LegacyPredictModel()
-    results = [
-        SearchResult(content="First", url="url1", source="src", chunk_number=1, similarity_score=0.7),
-        SearchResult(content="Second", url="url2", source="src", chunk_number=2, similarity_score=0.8),
-    ]
-    reranked = await search_service.rerank_results(
-        query="test query",
-        results=results,
-        reranking_model=reranking_model,
-        threshold=0.5,
-    )
-    assert len(reranked) == 1
-    assert reranked[0].content == "First"
-
-
-@pytest.mark.asyncio
-async def test_rerank_results_error_handling(search_service) -> None:
-    reranking_model = Mock()
-    reranking_model.rerank.side_effect = Exception("Reranking failed")
-    original_results = [
-        SearchResult(content="test", url="url", source="src", chunk_number=1, similarity_score=0.5)
-    ]
-    results = await search_service.rerank_results(
-        query="test",
-        results=original_results,
-        reranking_model=reranking_model,
-    )
-    assert results == original_results
+def test_rrf_fuse_scoring() -> None:
+    hit1 = _make_hit("a", 1.0)
+    hit2 = _make_hit("b", 1.0)
+    fused = _rrf_fuse([[hit1, hit2], [hit1]], limit=5)
+    assert len(fused) == 2
+    assert fused[0].chunk_id == "a"
+    assert fused[1].chunk_id == "b"

@@ -1,243 +1,221 @@
 <h1 align="center">Crawl4AI RAG MCP Server</h1>
 
 <p align="center">
-  <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
+  <em>Web Crawling and Graph RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com), [Kuzu](https://kuzudb.com/), [Mistral AI](https://docs.mistral.ai/), and [FlashRank](https://github.com/PrithivirajDamodaran/FlashRank) for advanced web crawling and RAG.
+A high-performance implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) providing web crawling and Graph RAG capabilities over a modern, remote service architecture:
 
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
+- **Remote Crawl4AI 0.8.6 REST Service**: Delegated web crawling via HTTP adapter.
+- **Remote FalkorDB Graph Database**: Dedicated `crawl-graph` storing graph topology, vector embeddings, and full-text indexes.
+- **Unified-ML Microservice**: 384-dimensional multilingual embeddings (`intfloat/multilingual-e5-small`), cross-encoder reranking (`ms-marco-MultiBERT-L-12`), and zero-shot GLiNER entity/relation extraction (`fastino/gliner2-multi-v1`).
+- **Mistral AI**: Chat-only completions and summaries (`mistral-small-latest`).
+- **Optional LangExtract Enrichment**: Grounded page-level structured metadata extraction with character span provenance.
 
-This refactor keeps the MCP surface while moving the project to an embedded Kuzu graph + vector store, Mistral models for embeddings and summaries, and FlashRank for local reranking.
+---
 
-## Overview
+## Architecture & Service Boundaries
 
-This MCP server provides tools that enable AI agents to crawl websites, store content in an embedded Kuzu database, and perform RAG over the crawled content. It follows the same MCP tool model as before while making local execution much simpler because the storage layer now lives inside the project instead of a separate hosted database.
-
-The server includes several advanced RAG strategies that can be enabled to enhance retrieval quality:
-- **Contextual Embeddings** for enriched semantic understanding
-- **Hybrid Search** combining vector and keyword search
-- **Agentic RAG** for specialized code example extraction
-- **Reranking** for improved result relevance using FlashRank
-
-See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
-
-## Vision
-
-The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
-
-1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
-
-2. **Multiple Embedding Models**: The current default provider is Mistral AI, with the architecture now centered around pluggable local storage and cleaner retrieval boundaries.
-
-3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
-
-4. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
-
-5. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
-
-## Features
-
-- **Smart URL Detection**: Automatically detects and handles different URL types (regular webpages, sitemaps, text files)
-- **Recursive Crawling**: Follows internal links to discover content
-- **Parallel Processing**: Efficiently crawls multiple pages simultaneously
-- **Content Chunking**: Intelligently splits content by headers and size for better processing
-- **Vector Search**: Performs RAG over crawled content, optionally filtering by data source for precision
-- **Source Retrieval**: Retrieve sources available for filtering to guide the RAG process
-
-## Tools
-
-The server provides essential web crawling and search tools:
-
-### Core Tools (Always Available)
-
-1. **`crawl_single_page`**: Quickly crawl a single web page and store its content in Kuzu
-2. **`smart_crawl_url`**: Intelligently crawl a full website based on the type of URL provided (sitemap, llms-full.txt, or a regular webpage that needs to be crawled recursively)
-3. **`get_available_sources`**: Get a list of all available sources (domains) in the database
-4. **`perform_rag_query`**: Search for relevant content using semantic search with optional source filtering
-
-### Conditional Tools
-
-5. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
-
-## Prerequisites
-
-- [Python 3.12+](https://www.python.org/downloads/)
-- [uv](https://docs.astral.sh/uv/) for environment and dependency management
-- A [Mistral AI API key](https://docs.mistral.ai/developers/quickstarts/first-api-request)
-- Optional: Docker if you want to containerize the server yourself
-
-## Installation
-
-### Using Docker
-
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
-   ```
-
-2. Build the Docker image:
-   ```bash
-   docker build -t mcp/crawl4ai-rag --build-arg PORT=8051 .
-   ```
-
-3. Create a `.env` file based on the configuration section below
-
-### Using uv directly
-
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
-   ```
-
-2. Install uv if you don't have it:
-   ```bash
-   pip install uv
-   ```
-
-3. Create and activate a virtual environment:
-   ```bash
-   uv venv .venv --python 3.12
-   .venv\Scripts\activate
-   # on Mac/Linux: source .venv/bin/activate
-   ```
-
-4. Install the package:
-   ```bash
-   uv pip install -e .
-   ```
-
-5. Initialize Playwright (for web crawling):
-   ```bash
-   uv run crawl4ai-setup
-   ```
-
-5. Create a `.env` file based on the configuration section below
-
-## Database Setup
-
-No external database setup is required. The server initializes its Kuzu schema automatically inside `KUZU_DB_PATH`.
-
-If you want a quick smoke test for the embedded database layer, run:
-
-```bash
-uv run python scripts/verify_kuzu.py
 ```
+┌───────────────────────────────────────────────────────────────────┐
+│                           MCP Clients                             │
+│               (Claude Desktop, Windsurf, Codex, etc.)             │
+└─────────────────────────────────┬─────────────────────────────────┘
+                                  │ (stdio / SSE)
+┌─────────────────────────────────▼─────────────────────────────────┐
+│                      Crawl4AI RAG MCP Server                      │
+│                                                                   │
+│  ┌─────────────────────────┐       ┌───────────────────────────┐  │
+│  │   Crawl4AI REST Client  │       │     Unified-ML Client     │  │
+│  │ (Remote Crawl4AI 0.8.6) │       │   (Embed / Rerank / GLiNER│  │
+│  └────────────┬────────────┘       └─────────────┬─────────────┘  │
+│               │                                  │                │
+│  ┌────────────▼────────────┐       ┌─────────────▼─────────────┐  │
+│  │     FalkorDB Store      │       │    Mistral Chat Adapter   │  │
+│  │  (`crawl-graph` store)  │       │  (Summaries & Completions)│  │
+│  └─────────────────────────┘       └───────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Remote Crawl4AI 0.8.6 REST Adapter
+Web crawling is handled by a remote Crawl4AI 0.8.6 HTTP service configured via `CRAWL4AI_BASE_URL` (and optional `CRAWL4AI_API_TOKEN`). All single-page and batch crawls are dispatched to the remote `/crawl` endpoint with configurable concurrency (`CRAWL4AI_MAX_BATCH_SIZE`) and timeouts (`CRAWL4AI_TIMEOUT_SECONDS`).
+
+### 2. Dedicated FalkorDB Graph Storage (`crawl-graph`)
+Graph data is persisted in a remote FalkorDB instance (`FALKORDB_URL`) under the dedicated graph name `crawl-graph` (`FALKORDB_GRAPH=crawl-graph`).
+- **Nodes**: `Site`, `CrawlRun`, `Page`, `Chunk`, `__Entity__`.
+- **Relationships**: `(:Site)-[:HAS_PAGE]->(:Page)`, `(:CrawlRun)-[:CRAWLED]->(:Page)`, `(:Page)-[:HAS_CHUNK]->(:Chunk)`, `(:Page)-[:LINKS_TO]->(:Page)`, `(:Site)-[:HAS_ENTITY]->(:__Entity__)`, `(:__Entity__)-[:MENTIONED_IN]->(:Chunk)`, and `(:__Entity__)-[:RELATES]->(:__Entity__)`.
+- **Indexes**: 384-dimensional vector indexes for semantic chunk search and entity search, plus full-text search indexes.
+- **Connection Management**: Configurable query timeout (`FALKORDB_QUERY_TIMEOUT_MS`) and connection pooling (`FALKORDB_MAX_CONNECTIONS`).
+
+### 3. Unified-ML Service
+All dense vector embeddings, reranking, and zero-shot entity extraction are offloaded to a Unified-ML microservice (`UNIFIED_ML_BASE_URL`):
+- **Embeddings**: 384-dimensional embeddings generated with `intfloat/multilingual-e5-small`. Follows asymmetric search conventions with required `passage: ` and `query: ` prefixes.
+- **Reranking**: Candidate reranking powered by `ms-marco-MultiBERT-L-12`.
+- **GLiNER Extraction**: Zero-shot named entity recognition and relation extraction powered by `fastino/gliner2-multi-v1` (`USE_GLINER_METADATA=true`), extracting entities and relationship triples directly from crawled text.
+
+### 4. Mistral AI (Chat & Summaries Only)
+Mistral AI (`MISTRAL_API_KEY`, `MODEL_CHOICE=mistral-small-latest`) is used strictly for chat completions:
+- Generating concise summaries of extracted code examples.
+- Generating high-level documentation summaries for indexed sources.
+- No embedding models are requested from Mistral AI.
+
+### 5. Optional LangExtract Metadata Enrichment
+When `USE_LANGEXTRACT_METADATA=true`, page-level grounded extractions are produced via the `langextract` library using Mistral to discover structured attributes and character interval spans (`start_char`, `end_char`).
+
+---
+
+## Fresh Crawl Requirement
+
+The graph schema is initialized idempotently on the dedicated `crawl-graph` in FalkorDB. Because the architecture uses a native graph model with 384-dimensional vector embeddings, a **fresh crawl is required** to populate the database. There is no legacy migration utility.
+
+---
+
+## Typed MCP Tools
+
+The server exposes five typed MCP tools. FastMCP serializes each Pydantic response as structured data; the tools do not return JSON strings.
+
+### 1. `crawl_single_page`
+Crawls one URL through remote Crawl4AI, performs site-level GLiNER enrichment, chunks and embeds the page, and writes one atomic crawl payload to FalkorDB.
+
+- **Parameters**: `url` (`str`)
+- **Response**: `SingleCrawlResponse` with `success`, `url`, `run_id`, `pages_crawled`, `chunks_stored`, structured `failures`, optional `error`, and `message`.
+
+### 2. `smart_crawl_url`
+Handles recursive internal-link crawling, XML sitemaps, and text/markdown files.
+
+- **Parameters**: `url` (`str`), `max_depth` (`int`, default `3`), `max_concurrent` (`int`, default `10`), `chunk_size` (`int`, default `5000`), and `timeout` (`int`, default `300`).
+- **Response**: `SmartCrawlResponse` with `success`, `url`, `crawl_type`, `run_id`, `urls_processed`, `pages_crawled`, `chunks_stored`, structured `failures`, optional `error`, and `message`.
+
+### 3. `get_available_sites`
+Lists indexed sites with page/chunk counts and persisted GLiNER metadata.
+
+- **Parameters**: None.
+- **Response**: `AvailableSitesResponse` with `success`, `sites`, `total_sites`, optional `error`, and `message`. Each `SiteInfo` contains `site_id`, `domain`, `root_url`, `summary`, `first_seen`, `last_crawled`, `page_count`, `chunk_count`, and `gliner_metadata`.
+
+### 4. `perform_rag_query`
+Performs semantic or hybrid chunk retrieval with optional Unified-ML reranking and entity/relation provenance expansion.
+
+- **Parameters**: `query` (`str`), `source` (`str | None`, default `None`), `match_count` (`int`, default `5`), and optional `use_hybrid`/`use_reranking` flags.
+- **Response**: `RagSearchResponse` with typed `SearchHit` results and structured failure details.
+
+### 5. `search_code_examples`
+Searches shared `Chunk` nodes filtered by `content_type="code"` and optional language/site filters.
+
+- **Parameters**: `query` (`str`), `source_id` (`str | None`, default `None`), `language` (`str | None`, default `None`), `match_count` (`int`, default `5`), and optional `use_reranking`.
+- **Response**: `CodeSearchResponse` with typed `SearchHit` results and structured failure details.
+
+---
 
 ## Configuration
 
-Create a `.env` file in the project root with the following variables:
-
-```
-# MCP Server Configuration
-HOST=0.0.0.0
-PORT=8051
-TRANSPORT=sse
-
-# Mistral AI Configuration
-MISTRAL_API_KEY=your_mistral_api_key
-MODEL_CHOICE=mistral-small-latest
-EMBEDDING_MODEL=mistral-embed
-EMBEDDING_DIMENSIONS=1024
-
-# Local Kuzu database
-KUZU_DB_PATH=./data/kuzu_db
-
-# RAG Strategies (set to "true" or "false", default to "false")
-USE_CONTEXTUAL_EMBEDDINGS=false
-USE_HYBRID_SEARCH=false
-USE_AGENTIC_RAG=false
-USE_RERANKING=false
-
-# FlashRank Configuration
-RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
-RERANKER_CACHE_DIR=./data/flashrank_cache
-RERANKER_MAX_LENGTH=512
-```
-
-### RAG Strategy Options
-
-The Crawl4AI RAG MCP server supports four powerful RAG strategies that can be enabled independently:
-
-#### 1. **USE_CONTEXTUAL_EMBEDDINGS**
-When enabled, this strategy enhances each chunk's embedding with additional context from the entire document. The system passes both the full document and the specific chunk to an LLM (configured via `MODEL_CHOICE`) to generate enriched context that gets embedded alongside the chunk content.
-
-- **When to use**: Enable this when you need high-precision retrieval where context matters, such as technical documentation where terms might have different meanings in different sections.
-- **Trade-offs**: Slower indexing due to LLM calls for each chunk, but significantly better retrieval accuracy.
-- **Cost**: Additional LLM API calls during indexing.
-
-#### 2. **USE_HYBRID_SEARCH**
-Combines keyword search and vector search, then merges them with reciprocal rank fusion (RRF) for more comprehensive retrieval.
-
-- **When to use**: Enable this when users might search using specific technical terms, function names, or when exact keyword matches are important alongside semantic understanding.
-- **Trade-offs**: Slightly slower search queries but more robust results, especially for technical content.
-- **Cost**: No additional API costs, just computational overhead.
-
-#### 3. **USE_AGENTIC_RAG**
-Enables specialized code example extraction and storage. When crawling documentation, the system identifies code blocks, extracts them with surrounding context, generates summaries with Mistral, and stores them in a dedicated Kuzu node table for code search.
-
-- **When to use**: Essential for AI coding assistants that need to find specific code examples, implementation patterns, or usage examples from documentation.
-- **Trade-offs**: Significantly slower crawling due to code extraction and summarization, requires more storage space.
-- **Cost**: Additional LLM API calls for summarizing each code example.
-- **Benefits**: Provides a dedicated `search_code_examples` tool that AI agents can use to find specific code implementations.
-
-#### 4. **USE_RERANKING**
-Applies FlashRank reranking to search results after initial retrieval. Uses a lightweight ONNX model (`ms-marco-MiniLM-L-12-v2` by default) to score each result against the original query, then reorders results by relevance.
-
-- **When to use**: Enable this when search precision is critical and you need the most relevant results at the top. Particularly useful for complex queries where semantic similarity alone might not capture query intent.
-- **Trade-offs**: Adds ~100-200ms to search queries depending on result count, but significantly improves result ordering.
-- **Cost**: No additional API costs - uses a local model that runs on CPU.
-- **Benefits**: Better result relevance, especially for complex queries. Works with both regular RAG search and code example search.
-
-### Recommended Configurations
-
-**For general documentation RAG:**
-```
-USE_CONTEXTUAL_EMBEDDINGS=false
-USE_HYBRID_SEARCH=true
-USE_AGENTIC_RAG=false
-USE_RERANKING=true
-```
-
-**For AI coding assistant with code examples:**
-```
-USE_CONTEXTUAL_EMBEDDINGS=true
-USE_HYBRID_SEARCH=true
-USE_AGENTIC_RAG=true
-USE_RERANKING=true
-```
-
-**For fast, basic RAG:**
-```
-USE_CONTEXTUAL_EMBEDDINGS=false
-USE_HYBRID_SEARCH=true
-USE_AGENTIC_RAG=false
-USE_RERANKING=false
-```
-
-## Running the Server
-
-### Using Docker
+Copy `.env.example` to `.env` and configure your environment:
 
 ```bash
-docker run --env-file .env -p 8051:8051 mcp/crawl4ai-rag
+cp .env.example .env
 ```
 
-### Using Python
+### Configuration Reference
 
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| **Server** | | | |
+| `HOST` | `str` | `0.0.0.0` | MCP server listen host |
+| `PORT` | `int` | `8051` | MCP server listen port |
+| `TRANSPORT` | `str` | `sse` | Transport type (`sse` or `stdio`) |
+| `PYTHONUNBUFFERED` | `int` | `1` | Disables output buffering |
+| `MCP_PROJECT_ROOT` | `str` | _auto-detected_ | Absolute path to project root |
+| **Mistral AI** | | | |
+| `MISTRAL_API_KEY` | `str` | _required_ | Mistral API key for chat/summaries |
+| `MODEL_CHOICE` | `str` | `mistral-small-latest` | Chat completion model |
+| **Remote Crawl4AI** | | | |
+| `CRAWL4AI_BASE_URL` | `str` | `http://localhost:11235` | Remote Crawl4AI REST service endpoint |
+| `CRAWL4AI_API_TOKEN` | `str` | `""` | Optional Bearer token for Crawl4AI service |
+| `CRAWL4AI_TIMEOUT_SECONDS` | `float`| `60.0` | HTTP timeout for crawl requests |
+| `CRAWL4AI_MAX_BATCH_SIZE` | `int` | `100` | Maximum URLs per batch request (1–100) |
+| **FalkorDB** | | | |
+| `FALKORDB_URL` | `str` | `falkor://localhost:6380` | FalkorDB connection URL |
+| `FALKORDB_GRAPH` | `str` | `crawl-graph` | Dedicated graph name (must be `crawl-graph`) |
+| `FALKORDB_QUERY_TIMEOUT_MS` | `int` | `1000` | Query timeout in milliseconds |
+| `FALKORDB_MAX_CONNECTIONS` | `int` | `16` | Connection pool size |
+| **Unified-ML** | | | |
+| `UNIFIED_ML_BASE_URL` | `str` | `http://localhost:8000` | Unified-ML microservice endpoint |
+| `UNIFIED_ML_EMBED_MODEL` | `str` | `intfloat/multilingual-e5-small` | Deployed embedding model |
+| `UNIFIED_ML_EMBEDDING_DIMENSIONS` | `int` | `384` | Embedding dimension (must be `384`) |
+| `UNIFIED_ML_TIMEOUT_SECONDS` | `float`| `30.0` | HTTP timeout for ML service |
+| `UNIFIED_ML_BATCH_SIZE` | `int` | `32` | Batch size for embedding calls |
+| **GLiNER Extraction** | | | |
+| `USE_GLINER_METADATA` | `bool` | `true` | Enable zero-shot entity/relation extraction |
+| `GLINER_ENTITY_LABELS` | `str` | `product,technology,library,organization,person` | Comma-separated entity labels |
+| `GLINER_RELATION_LABELS` | `str` | `uses,depends_on,implements,stores` | Comma-separated relation labels |
+| `GLINER_THRESHOLD` | `float`| `0.5` | Confidence threshold for GLiNER facts |
+| `GLINER_INCLUDE_CONFIDENCE` | `bool` | `true` | Store confidence scores in graph |
+| `GLINER_INCLUDE_SPANS` | `bool` | `true` | Store character spans in graph |
+| **LangExtract (Optional)** | | | |
+| `USE_LANGEXTRACT_METADATA` | `bool` | `false` | Enable page-level LangExtract enrichment |
+| `LANGEXTRACT_MODEL_ID` | `str` | `mistral-small-latest` | Model ID for LangExtract |
+| `LANGEXTRACT_BASE_URL` | `str` | `https://api.mistral.ai/v1` | Mistral API endpoint for LangExtract |
+| `LANGEXTRACT_EXTRACTION_PASSES` | `int` | `1` | Extraction passes per page |
+| `LANGEXTRACT_MAX_WORKERS` | `int` | `4` | Concurrency for LangExtract workers |
+| `LANGEXTRACT_MAX_CHAR_BUFFER` | `int` | `2000` | Character chunk buffer size |
+| **Strategy Flags** | | | |
+| `USE_CONTEXTUAL_EMBEDDINGS` | `bool` | `false` | Generate LLM context prefix before embedding |
+| `USE_HYBRID_SEARCH` | `bool` | `false` | Combine vector ANN with full-text search |
+| `USE_RERANKING` | `bool` | `false` | Apply Unified-ML cross-encoder reranking |
+| `USE_AGENTIC_RAG` | `bool` | `true` | Extract and index code examples |
+
+---
+
+## Setup & Installation
+
+### Prerequisites
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) for environment and dependency management
+- Running **FalkorDB** instance (e.g. `docker run -p 6380:6379 -it --rm falkordb/falkordb`)
+- Running **Unified-ML** service (providing `/health`, `/info`, `/embeddings`, `/rerank`, `/extract`)
+- Running **Crawl4AI 0.8.6** REST service (providing `/health`, `/crawl`)
+- A valid **Mistral AI** API key
+
+### 1. Install Dependencies
+```bash
+uv venv .venv --python 3.12
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e .
+```
+
+### 2. Configure Environment
+Create a `.env` file from `.env.example` and supply your `MISTRAL_API_KEY` along with remote service URLs.
+
+### 3. Verify Remote Services Contract
+Run the remote service contract verification script to validate connectivity and model contracts before starting the MCP server:
+
+```bash
+uv run python scripts/verify_remote_services.py
+```
+
+> **Note**: Live verification requires active, reachable Crawl4AI and Unified-ML services. The diagnostic script verifies health status, model names, 384-dimensional embeddings, reranking, and GLiNER extraction against the remote endpoints.
+
+### 4. Start MCP Server
 ```bash
 uv run crawl4ai-mcp
 ```
 
-The server will start and listen on the configured host and port.
+---
 
-## Integration with MCP Clients
+## Structured Failure Behavior
 
-### SSE Configuration
+The server is built for predictable failure isolation across all remote dependencies:
 
-Once you have the server running with SSE transport, you can connect to it using this configuration:
+- **Startup Validation**: Settings validate required credentials and fail fast if removed legacy variables are present in the environment.
+- **Provider Error Isolation**: Remote HTTP timeouts and status errors are wrapped into structured exception types (`Crawl4AIProviderError`, `UnifiedMLProviderError`, `ChatProviderError`).
+- **Resilient Batch Ingestion**: In batch crawls, individual URL fetch failures return structured `CrawlFailure` entries without aborting successful page ingests.
+- **JSON Error Envelopes**: All MCP tools return structured JSON payloads with `"success": false` and clear `"error"` messages upon failure.
+
+---
+
+## MCP Client Configuration
+
+### SSE Transport (Default)
+Connect your MCP client to the running HTTP SSE server:
 
 ```json
 {
@@ -250,129 +228,30 @@ Once you have the server running with SSE transport, you can connect to it using
 }
 ```
 
-> **Note for Windsurf users**: Use `serverUrl` instead of `url` in your configuration:
-> ```json
-> {
->   "mcpServers": {
->     "crawl4ai-rag": {
->       "transport": "sse",
->       "serverUrl": "http://localhost:8051/sse"
->     }
->   }
-> }
-> ```
->
-> **Note for Docker users**: Use `host.docker.internal` instead of `localhost` if your client is running in a different container. This will apply if you are using this MCP server within n8n!
+*(For Windsurf, use `"serverUrl": "http://localhost:8051/sse"`)*
 
-### Stdio Configuration
-
-Add this server to your MCP configuration for Claude Desktop, Windsurf, or any other MCP client:
+### Stdio Transport
+For direct process invocation via MCP clients (Claude Desktop, Windsurf, Codex):
 
 ```json
 {
   "mcpServers": {
     "crawl4ai-rag": {
       "command": "uv",
-      "args": ["--directory", "/absolute/path/to/mcp-crawl4ai-rag-kuzu", "run", "crawl4ai-mcp"],
+      "args": ["--directory", "/absolute/path/to/mcp-crawl4ai-rag", "run", "crawl4ai-mcp"],
       "env": {
         "TRANSPORT": "stdio",
+        "PYTHONUNBUFFERED": "1",
+        "MCP_PROJECT_ROOT": "/absolute/path/to/mcp-crawl4ai-rag",
         "MISTRAL_API_KEY": "your_mistral_api_key",
-        "KUZU_DB_PATH": "./data/kuzu_db",
-        "CRAWL4AI_BASE_DIRECTORY": "."
+        "CRAWL4AI_BASE_URL": "http://localhost:11235",
+        "FALKORDB_URL": "falkor://localhost:6380",
+        "FALKORDB_GRAPH": "crawl-graph",
+        "UNIFIED_ML_BASE_URL": "http://localhost:8000",
+        "UNIFIED_ML_EMBED_MODEL": "intfloat/multilingual-e5-small",
+        "UNIFIED_ML_EMBEDDING_DIMENSIONS": "384"
       }
     }
   }
 }
 ```
-
-For Codex on Windows, the equivalent command is:
-
-```json
-{
-  "mcpServers": {
-    "crawl4ai-rag-kuzu": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "C:\\Users\\Jan\\Documents\\GitHub\\1Agents1\\.CLI\\mcp-crawl4ai-rag-kuzu",
-        "run",
-        "crawl4ai-mcp"
-      ],
-      "env": {
-        "TRANSPORT": "stdio",
-        "MISTRAL_API_KEY": "your_mistral_api_key",
-        "KUZU_DB_PATH": "./data/kuzu_db",
-        "CRAWL4AI_BASE_DIRECTORY": "."
-      }
-    }
-  }
-}
-```
-
-### Docker with Stdio Configuration
-
-```json
-{
-  "mcpServers": {
-    "crawl4ai-rag": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", 
-               "-e", "TRANSPORT", 
-               "-e", "MISTRAL_API_KEY", 
-               "-e", "KUZU_DB_PATH", 
-               "mcp/crawl4ai"],
-      "env": {
-        "TRANSPORT": "stdio",
-        "MISTRAL_API_KEY": "your_mistral_api_key",
-        "KUZU_DB_PATH": "./data/kuzu_db"
-      }
-    }
-  }
-}
-```
-
-## Building Your Own Server
-
-This implementation provides a foundation for building more complex MCP servers with web crawling capabilities. To build your own:
-
-1. Add your own tools by creating methods with the `@mcp.tool()` decorator
-2. Create your own lifespan function to add your own dependencies
-3. Modify the `utils.py` file for any helper functions you need
-4. Extend the crawling capabilities by adding more specialized crawlers
-
-## Troubleshooting
-
-### Playwright Browser Not Found
-
-If you see errors like:
-```
-BrowserType.launch: Executable doesn't exist at ...\ms-playwright\chromium-1169\chrome.exe
-```
-
-The Playwright browsers need to be installed in the project's venv:
-
-```bash
-# Install Playwright browsers into the project venv
-PLAYWRIGHT_BROWSERS_PATH=.venv/playwright uv run playwright install chromium
-```
-
-The server automatically detects and uses browsers installed in `.venv/playwright/`.
-
-### MCP Server Connection Failures (Error -32000)
-
-If the MCP server fails to connect intermittently:
-
-1. **Check Playwright browsers** - Ensure browsers are installed in `.venv/playwright/`
-2. **Check the data directory** - Ensure `./data/kuzu_db` exists and is writable
-3. **Restart the server** - Kill any existing processes and restart
-
-### Locked Executable on Windows
-
-If `uv pip install -e .` fails with "Access denied" on the executable:
-
-1. Kill any running MCP server processes
-2. Manually copy updated files:
-   ```bash
-   cp src/*.py .venv/Lib/site-packages/crawl4ai_mcp/
-   ```
-3. Or restart your terminal/IDE to release the file lock
